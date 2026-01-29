@@ -213,11 +213,12 @@ class OrchestratorAgent:
         job = JobDescription(**{k: v for k, v in job_dict.items() 
                                if k in JobDescription.__dataclass_fields__})
         
-        response = self.jd_analyzer.run(job)
+        result = self.jd_analyzer.run(job)
+        response = result.response
         self._record_agent_response(response)
         
         if response.status == AgentStatus.SUCCESS:
-            self.state.parsed_jd = response.data.to_dict() if response.data else {}
+            self.state.parsed_jd = response.output.to_dict() if response.output else {}
             return OrchestratorDecision(
                 action=OrchestratorAction.CONTINUE,
                 next_stage=PipelineStage.JD_ANALYSIS,
@@ -226,7 +227,7 @@ class OrchestratorAgent:
         else:
             return OrchestratorDecision(
                 action=OrchestratorAction.ABORT,
-                reason=f"JD analysis failed: {response.errors}",
+                reason=f"JD analysis failed: {response.explanation}",
             )
     
     def _run_resume_parsing(self) -> OrchestratorDecision:
@@ -249,13 +250,14 @@ class OrchestratorAgent:
                 })
                 continue
             
-            response = self.resume_parser.run(input_data)
+            result = self.resume_parser.run(input_data)
+            response = result.response
             self._record_agent_response(response)
             
-            if response.status == AgentStatus.SUCCESS and response.data:
+            if response.status == AgentStatus.SUCCESS and response.output:
                 parsed_resumes.append({
                     "candidate_id": input_data["candidate_id"],
-                    "parsed": response.data.to_dict(),
+                    "parsed": response.output.to_dict(),
                 })
             else:
                 errors.append(f"Failed to parse resume for {input_data['candidate_id'][:8]}")
@@ -295,11 +297,12 @@ class OrchestratorAgent:
                 parsed_jd=parsed_jd,
             )
             
-            response = self.matcher.run(matcher_input)
+            result = self.matcher.run(matcher_input)
+            response = result.response
             self._record_agent_response(response)
             
-            if response.status == AgentStatus.SUCCESS and response.data:
-                match_results.append(response.data)
+            if response.status == AgentStatus.SUCCESS and response.output:
+                match_results.append(response.output)
         
         self.state.match_results = [m.to_dict() for m in match_results]
         
@@ -329,18 +332,19 @@ class OrchestratorAgent:
             max_candidates=max_candidates,
         )
         
-        response = self.shortlister.run(shortlist_input)
+        result = self.shortlister.run(shortlist_input)
+        response = result.response
         self._record_agent_response(response)
         
-        if response.status == AgentStatus.SUCCESS and response.data:
-            self.state.shortlisted_candidates = response.data.shortlisted
+        if response.status == AgentStatus.SUCCESS and response.output:
+            self.state.shortlisted_candidates = response.output.shortlisted
             
             # Add decision gates to state
-            for decision in response.data.decisions:
+            for decision in response.output.decisions:
                 self.state.add_decision_gate(decision)
             
             # Check if too many borderline cases
-            borderline = [d for d in response.data.decisions 
+            borderline = [d for d in response.output.decisions 
                          if any("borderline" in str(f).lower() for f in d.bias_flags)]
             if len(borderline) > len(match_results) * 0.25:
                 return OrchestratorDecision(
@@ -374,22 +378,23 @@ class OrchestratorAgent:
             difficulty=difficulty,
         )
         
-        response = self.test_generator.run(test_input)
+        result = self.test_generator.run(test_input)
+        response = result.response
         self._record_agent_response(response)
         
-        if response.status == AgentStatus.SUCCESS and response.data:
+        if response.status == AgentStatus.SUCCESS and response.output:
             # Store generated test
-            self.state.test_questions = [q.to_dict() for q in response.data.questions]
+            self.state.test_questions = [q.to_dict() for q in response.output.questions]
             
             # Log test metadata
             self._log_event("test_generated", {
                 "job_id": job_id,
-                "test_id": response.data.test_id,
-                "num_questions": len(response.data.questions),
-                "categories": list(response.data.questions_by_category.keys()),
+                "test_id": response.output.test_id,
+                "num_questions": len(response.output.questions),
+                "categories": list(response.output.questions_by_category.keys()),
             })
         else:
-            self.state.errors.append(f"Test generation failed: {response.errors}")
+            self.state.errors.append(f"Test generation failed: {response.explanation}")
             return OrchestratorDecision(
                 action=OrchestratorAction.PAUSE,
                 reason="Test generation failed - manual test creation may be required",
@@ -435,11 +440,12 @@ class OrchestratorAgent:
                 responses=responses,
             )
             
-            response = self.test_evaluator.run(eval_input)
+            result = self.test_evaluator.run(eval_input)
+            response = result.response
             self._record_agent_response(response)
             
-            if response.status == AgentStatus.SUCCESS and response.data:
-                test_results.append(response.data)
+            if response.status == AgentStatus.SUCCESS and response.output:
+                test_results.append(response.output)
         
         self.state.test_results = [r.to_dict() for r in test_results]
         
@@ -499,22 +505,23 @@ class OrchestratorAgent:
             top_k=top_k,
         )
         
-        response = self.ranker.run(ranker_input)
+        result = self.ranker.run(ranker_input)
+        response = result.response
         self._record_agent_response(response)
         
-        if response.status == AgentStatus.SUCCESS and response.data:
-            self.state.final_rankings = [r.to_dict() for r in response.data.rankings]
+        if response.status == AgentStatus.SUCCESS and response.output:
+            self.state.final_rankings = [r.to_dict() for r in response.output.rankings]
             
             # Log ranking summary
             self._log_event("ranking_complete", {
                 "job_id": self.state.job_id,
-                "total_ranked": response.data.total_candidates,
-                "top_k": len(response.data.rankings),
-                "methodology": response.data.ranking_methodology,
+                "total_ranked": response.output.total_candidates,
+                "top_k": len(response.output.rankings),
+                "methodology": response.output.ranking_methodology,
             })
             
             # Check if top candidates need human review
-            needs_review = [r for r in response.data.rankings if r.human_review_required]
+            needs_review = [r for r in response.output.rankings if r.human_review_required]
             if needs_review:
                 self.state.warnings.append(
                     f"{len(needs_review)} top candidates flagged for human review"
@@ -551,33 +558,34 @@ class OrchestratorAgent:
             match_results=match_results,
         )
         
-        response = self.bias_auditor.run(audit_input)
+        result = self.bias_auditor.run(audit_input)
+        response = result.response
         self._record_agent_response(response)
         
-        if response.status == AgentStatus.SUCCESS and response.data:
+        if response.status == AgentStatus.SUCCESS and response.output:
             self.state.bias_audit_results = {
-                "audit_passed": response.data.audit_passed,
-                "fairness_score": response.data.overall_fairness_score,
-                "findings": response.data.findings,
-                "recommendations": response.data.recommendations,
-                "requires_human_review": response.data.requires_human_review,
-                "compliance_notes": response.data.compliance_notes,
+                "audit_passed": response.output.audit_passed,
+                "fairness_score": response.output.overall_fairness_score,
+                "findings": response.output.findings,
+                "recommendations": response.output.recommendations,
+                "requires_human_review": response.output.requires_human_review,
+                "compliance_notes": response.output.compliance_notes,
             }
             
             # Log audit results
             self._log_event("bias_audit_complete", {
                 "job_id": self.state.job_id,
-                "audit_passed": response.data.audit_passed,
-                "fairness_score": response.data.overall_fairness_score,
-                "findings_count": len(response.data.findings),
+                "audit_passed": response.output.audit_passed,
+                "fairness_score": response.output.overall_fairness_score,
+                "findings_count": len(response.output.findings),
             })
             
             # If audit fails, require human review
-            if not response.data.audit_passed:
+            if not response.output.audit_passed:
                 return OrchestratorDecision(
                     action=OrchestratorAction.PAUSE,
-                    reason=f"Bias audit failed (fairness score: {response.data.overall_fairness_score:.0%}). "
-                           f"Found {len(response.data.findings)} issues requiring review.",
+                    reason=f"Bias audit failed (fairness score: {response.output.overall_fairness_score:.0%}). "
+                           f"Found {len(response.output.findings)} issues requiring review.",
                     requires_human_approval=True,
                 )
         else:
@@ -591,22 +599,23 @@ class OrchestratorAgent:
         return OrchestratorDecision(
             action=OrchestratorAction.CONTINUE,
             next_stage=PipelineStage.BIAS_AUDIT,
-            reason=f"Bias audit {'PASSED' if response.data.audit_passed else 'REQUIRES REVIEW'} "
-                   f"(fairness: {response.data.overall_fairness_score:.0%})",
+            reason=f"Bias audit {'PASSED' if response.output.audit_passed else 'REQUIRES REVIEW'} "
+                   f"(fairness: {response.output.overall_fairness_score:.0%})",
         )
     
     def _record_agent_response(self, response: AgentResponse) -> None:
         """Record an agent's response in the pipeline state."""
         self.state.add_agent_response(response.to_dict())
         
-        if response.warnings:
-            self.state.warnings.extend(response.warnings)
+        # AgentResponse doesn't have warnings, check metadata if needed
+        if response.metadata.get("warnings"):
+            self.state.warnings.extend(response.metadata["warnings"])
         
         self._log_event("agent_response", {
-            "agent_type": response.agent_type,
+            "agent_name": response.agent_name,
             "status": response.status.value,
-            "confidence": response.confidence,
-            "requires_review": response.requires_human_review,
+            "confidence": response.confidence_score,
+            "requires_review": response.needs_human_review(),
         })
     
     def _log_event(self, event_type: str, data: Dict[str, Any]) -> None:
