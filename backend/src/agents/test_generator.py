@@ -363,10 +363,24 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
         Returns:
             TestGeneratorOutput, confidence_score, explanation
         """
-        jd = input_data.parsed_jd
+        jd_data = input_data.parsed_jd
         num_questions = min(input_data.num_questions, 10)  # Cap at 10 questions
         
-        self.log_reasoning(f"Generating {num_questions} questions for job {jd.job_id[:8]}")
+        # Handle both dict and ParsedJD object
+        if isinstance(jd_data, dict):
+            # Create a simple namespace object from dict for attribute access
+            class JDWrapper:
+                def __init__(self, data):
+                    self.job_id = data.get("job_id", input_data.job_id or "unknown")
+                    self.technical_topics = data.get("technical_topics", [])
+                    self.required_skills = data.get("required_skills", [])
+                    self.preferred_skills = data.get("preferred_skills", [])
+                    self.experience_years_min = data.get("experience_years_min", 0)
+            jd = JDWrapper(jd_data)
+        else:
+            jd = jd_data
+        
+        self.log_reasoning(f"Generating {num_questions} questions for job {jd.job_id[:8] if jd.job_id else 'unknown'}")
         self.log_reasoning(f"Topics to cover: {jd.technical_topics}")
         
         test_id = uuid4().hex
